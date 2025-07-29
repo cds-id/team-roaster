@@ -16,37 +16,54 @@ class GeminiService {
   /**
    * Generate personalized pressure message for a team member
    */
-  async generatePressureMessage(memberName, outdatedCards, messageType = 'morning') {
+  async generatePressureMessage(memberName, outdatedCards, messageType = 'morning', memberRole = 'unknown') {
     if (!this.enabled) {
-      return this.getDefaultPressureMessage(memberName, outdatedCards, messageType);
+      return this.getDefaultPressureMessage(memberName, outdatedCards, messageType, memberRole);
     }
 
     try {
-      const prompt = this.buildPressurePrompt(memberName, outdatedCards, messageType);
+      const prompt = this.buildPressurePrompt(memberName, outdatedCards, messageType, memberRole);
       const result = await this.model.generateContent(prompt);
       const response = await result.response;
       return response.text();
     } catch (error) {
       console.error('Error generating AI pressure message:', error);
-      return this.getDefaultPressureMessage(memberName, outdatedCards, messageType);
+      return this.getDefaultPressureMessage(memberName, outdatedCards, messageType, memberRole);
     }
   }
 
   /**
    * Build prompt for Gemini based on message type and context
    */
-  buildPressurePrompt(memberName, outdatedCards, messageType) {
+  buildPressurePrompt(memberName, outdatedCards, messageType, memberRole) {
     const totalCards = outdatedCards.length;
     const maxDays = Math.max(...outdatedCards.map(card => card.daysSinceActivity));
     const cardList = outdatedCards.slice(0, 3).map(card =>
-      `- "${card.name}" (${card.daysSinceActivity} hari mangkrak)`
+      `- "${card.name}" (${card.daysSinceActivity} hari mangkrak${card.listName ? ` di ${card.listName}` : ''})`
     ).join('\n');
+
+    // Get role-specific context
+    let roleContext = '';
+    let completionCriteria = '';
+
+    if (memberRole === 'developers') {
+      roleContext = 'Developer (Backend/Frontend)';
+      completionCriteria = 'Card dianggap selesai kalau sudah dipush ke Testing/QA';
+    } else if (memberRole === 'testers') {
+      roleContext = 'QA Tester';
+      completionCriteria = 'Card dianggap selesai kalau sudah Done/Released setelah testing';
+    } else {
+      roleContext = 'Team Member';
+      completionCriteria = 'Card dianggap selesai kalau sudah dipindah ke status Done';
+    }
 
     const baseContext = `
 Kamu adalah seorang project manager yang sarkastis dan humoris. Tugasmu adalah membuat pesan pengingat dalam Bahasa Indonesia yang kreatif, sarkastis, tapi tetap profesional untuk mendorong tim menyelesaikan task mereka.
 
 Context:
 - Nama team member: ${memberName}
+- Role: ${roleContext}
+- Kriteria selesai: ${completionCriteria}
 - Total card mangkrak: ${totalCards}
 - Card paling lama diabaikan: ${maxDays} hari
 - Contoh card yang mangkrak:
@@ -214,21 +231,38 @@ Tone: Sarkastis tentang keberadaan yang dipertanyakan.
   /**
    * Default pressure message when AI is not available
    */
-  getDefaultPressureMessage(memberName, outdatedCards, messageType) {
+  getDefaultPressureMessage(memberName, outdatedCards, messageType, memberRole) {
     const totalCards = outdatedCards.length;
     const maxDays = Math.max(...outdatedCards.map(card => card.daysSinceActivity));
 
     const messages = {
-      morning: `☕ Morning ${memberName}! Sambil ngopi, coba cek ${totalCards} card yang udah ${maxDays} hari nganggur ya. Siapa tau abis ngopi jadi semangat 😏`,
-
-      afternoon: `🌞 Halo ${memberName}, udah makan siang? ${totalCards} card kamu masih lapar update nih, udah ${maxDays} hari puasa 🙄`,
-
-      evening: `🌙 ${memberName}, mau pulang? Eits, ${totalCards} card masih nungguin loh. Yang paling kasian udah ${maxDays} hari ditinggal 😢`,
-
-      urgent: `🚨 URGENT @${memberName}! ${totalCards} card HARUS diupdate SEKARANG! Ada yang udah ${maxDays} HARI mangkrak! No excuse! 💀`
+      morning: {
+        developers: `☕ Morning ${memberName}! Sambil ngopi, coba push ${totalCards} card ke Testing dong. Ada yang udah ${maxDays} hari stuck di development loh 😏`,
+        testers: `☕ Morning ${memberName}! Sambil ngopi, coba selesaikan testing ${totalCards} card ya. Ada yang udah ${maxDays} hari nunggu di-test 🧪`,
+        default: `☕ Morning ${memberName}! Sambil ngopi, coba cek ${totalCards} card yang udah ${maxDays} hari nganggur ya. Siapa tau abis ngopi jadi semangat 😏`
+      },
+      afternoon: {
+        developers: `🌞 Halo ${memberName}, udah makan siang? ${totalCards} card masih stuck di development nih, udah ${maxDays} hari belum ke Testing 💻`,
+        testers: `🌞 Halo ${memberName}, udah makan siang? ${totalCards} card masih nunggu testing nih, udah ${maxDays} hari di queue 🔍`,
+        default: `🌞 Halo ${memberName}, udah makan siang? ${totalCards} card kamu masih lapar update nih, udah ${maxDays} hari puasa 🙄`
+      },
+      evening: {
+        developers: `🌙 ${memberName}, mau pulang? Eits, ${totalCards} card belum di-push ke Testing loh. Yang paling parah udah ${maxDays} hari coding terus 💀`,
+        testers: `🌙 ${memberName}, mau pulang? Eits, ${totalCards} card masih perlu testing loh. Yang paling lama udah ${maxDays} hari nunggu 🧐`,
+        default: `🌙 ${memberName}, mau pulang? Eits, ${totalCards} card masih nungguin loh. Yang paling kasian udah ${maxDays} hari ditinggal 😢`
+      },
+      urgent: {
+        developers: `🚨 URGENT @${memberName}! ${totalCards} card HARUS ke Testing SEKARANG! Ada yang udah ${maxDays} HARI stuck di dev! Push NOW! 💀`,
+        testers: `🚨 URGENT @${memberName}! ${totalCards} card HARUS selesai testing SEKARANG! Ada yang udah ${maxDays} HARI nunggu! Test NOW! 💀`,
+        default: `🚨 URGENT @${memberName}! ${totalCards} card HARUS diupdate SEKARANG! Ada yang udah ${maxDays} HARI mangkrak! No excuse! 💀`
+      }
     };
 
-    return messages[messageType] || messages.morning;
+    const roleKey = memberRole === 'developers' ? 'developers' :
+                   memberRole === 'testers' ? 'testers' :
+                   'default';
+
+    return messages[messageType][roleKey] || messages[messageType].default || messages.morning.default;
   }
 
   /**

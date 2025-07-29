@@ -1,4 +1,5 @@
 const cron = require('node-cron');
+const { roleHelpers } = require('../config/teamRoles');
 
 class MessageSchedulerService {
   constructor(config, trelloService, whatsappService, geminiService) {
@@ -203,7 +204,8 @@ class MessageSchedulerService {
         message += `🏆 *TOP PROKRASTINATOR SIANG INI:*\n`;
         procrastinators.forEach((person, index) => {
           const medal = index === 0 ? '🥇' : index === 1 ? '🥈' : '🥉';
-          message += `${medal} ${person.name}: ${person.count} card mangkrak\n`;
+          const roleEmoji = person.role === 'developers' ? '💻' : person.role === 'testers' ? '🔍' : '👤';
+          message += `${medal} ${person.name} ${roleEmoji}: ${person.count} card mangkrak\n`;
         });
         message += `\n_Ayo dong, masih ada waktu sampai sore!_ ⏰`;
       }
@@ -269,6 +271,12 @@ class MessageSchedulerService {
       for (const [memberName, stats] of topOffenders) {
         let message = `📱 *PERSONAL REMINDER* 📱\n\n`;
 
+        // Get role-specific emoji and label
+        const roleEmoji = stats.role === 'developers' ? '💻' : stats.role === 'testers' ? '🔍' : '👤';
+        const roleLabel = stats.role === 'developers' ? 'Developer' : stats.role === 'testers' ? 'QA Tester' : 'Team Member';
+
+        message += `${roleEmoji} *${memberName} - ${roleLabel}*\n\n`;
+
         // Get AI-generated pressure message
         if (this.geminiService && this.geminiService.enabled) {
           const pressureMsg = await this.geminiService.generatePressureMessage(
@@ -279,9 +287,20 @@ class MessageSchedulerService {
           message += pressureMsg;
         } else {
           message += `Halo ${memberName}! 👋\n\n`;
-          message += `Friendly reminder: Kamu punya ${stats.count} card yang mangkrak.\n`;
-          message += `Yang paling parah udah ${stats.maxDays} hari loh! 😱\n\n`;
-          message += `Yuk, minimal update 1 card hari ini? 💪`;
+
+          if (stats.role === 'developers') {
+            message += `Friendly reminder: Kamu punya ${stats.count} card yang belum masuk ke Testing.\n`;
+            message += `Yang paling lama udah ${stats.maxDays} hari nganggur di development! 😱\n\n`;
+            message += `Yuk, push ke Testing minimal 1 card hari ini? 💪`;
+          } else if (stats.role === 'testers') {
+            message += `Friendly reminder: Kamu punya ${stats.count} card yang masih di Testing.\n`;
+            message += `Yang paling lama udah ${stats.maxDays} hari belum selesai di-test! 😱\n\n`;
+            message += `Yuk, selesaikan testing minimal 1 card hari ini? 🔍`;
+          } else {
+            message += `Friendly reminder: Kamu punya ${stats.count} card yang mangkrak.\n`;
+            message += `Yang paling parah udah ${stats.maxDays} hari loh! 😱\n\n`;
+            message += `Yuk, minimal update 1 card hari ini? 💪`;
+          }
         }
 
         await this.whatsappService.sendMessage(message);
@@ -479,7 +498,18 @@ class MessageSchedulerService {
       }
     }
 
-    message += `\n💐 _Hadiah: Lembur gratis weekend ini!_ 💐`;
+    message += `\n💐 _Hadiah: Lembur gratis weekend ini!_ 💐\n\n`;
+
+    // Add role-specific notes
+    const devCount = shameList.filter(([name, stats]) => stats.role === 'developers').length;
+    const qaCount = shameList.filter(([name, stats]) => stats.role === 'testers').length;
+
+    if (devCount > 0 && qaCount > 0) {
+      message += `📌 *Note:*\n`;
+      message += `• Developer: Card dianggap selesai kalau sudah masuk Testing\n`;
+      message += `• QA Tester: Card dianggap selesai kalau sudah Done/Released\n`;
+    }
+
     return message;
   }
 
@@ -540,11 +570,13 @@ class MessageSchedulerService {
       if (report.memberStatistics) {
         Object.entries(report.memberStatistics).forEach(([name, stats]) => {
           if (!allStats[name]) {
-            allStats[name] = { count: 0, maxDays: 0, cards: [] };
+            allStats[name] = { count: 0, maxDays: 0, cards: [], role: stats.role };
           }
           allStats[name].count += stats.count;
           allStats[name].maxDays = Math.max(allStats[name].maxDays, stats.maxDays);
           allStats[name].cards.push(...stats.cards);
+          // Keep the role (should be the same across all reports for a member)
+          allStats[name].role = stats.role || allStats[name].role;
         });
       }
     });

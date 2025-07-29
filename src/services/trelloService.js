@@ -1,4 +1,5 @@
 const axios = require('axios');
+const { roleHelpers } = require('../config/teamRoles');
 
 class TrelloService {
   constructor(apiKey, apiToken) {
@@ -152,30 +153,58 @@ class TrelloService {
   }
 
   /**
-   * Categorize cards by activity status
+   * Categorize cards by activity status and role-based completion
    */
-  categorizeCardsByActivity(cards) {
+  categorizeCardsByActivity(cards, listMap) {
     const now = new Date();
     const threeDaysAgo = new Date();
     threeDaysAgo.setDate(threeDaysAgo.getDate() - 3);
 
     const outdatedCards = [];
     const recentCards = [];
+    const completedCards = [];
 
     cards.forEach(card => {
       const lastActivity = new Date(card.dateLastActivity);
       const daysSinceActivity = Math.floor((now - lastActivity) / (1000 * 60 * 60 * 24));
+      const listName = listMap[card.idList]?.name || 'Unknown';
 
-      if (lastActivity < threeDaysAgo) {
-        outdatedCards.push({
-          ...card,
-          daysSinceActivity
-        });
+      // Check if card is completed for all assigned members
+      let isCompletedForAllMembers = true;
+      if (card.members && card.members.length > 0) {
+        for (const member of card.members) {
+          const memberIdentifier = member.fullName || member.username || '';
+          if (!roleHelpers.isCardDoneForMember(listName, memberIdentifier)) {
+            isCompletedForAllMembers = false;
+            break;
+          }
+        }
       } else {
-        recentCards.push({
-          ...card,
-          daysSinceActivity
+        // If no members assigned, use default behavior
+        isCompletedForAllMembers = false;
+      }
+
+      const cardWithInfo = {
+        ...card,
+        daysSinceActivity,
+        listName,
+        roleStatus: {}
+      };
+
+      // Add role-specific status for each member
+      if (card.members && card.members.length > 0) {
+        card.members.forEach(member => {
+          const memberIdentifier = member.fullName || member.username || '';
+          cardWithInfo.roleStatus[memberIdentifier] = roleHelpers.getCardStatusForMember(listName, memberIdentifier);
         });
+      }
+
+      if (isCompletedForAllMembers) {
+        completedCards.push(cardWithInfo);
+      } else if (lastActivity < threeDaysAgo) {
+        outdatedCards.push(cardWithInfo);
+      } else {
+        recentCards.push(cardWithInfo);
       }
     });
 
@@ -185,13 +214,16 @@ class TrelloService {
     // Sort recent cards by most recent activity
     recentCards.sort((a, b) => new Date(b.dateLastActivity) - new Date(a.dateLastActivity));
 
-    return { outdatedCards, recentCards };
+    // Sort completed cards by most recent activity
+    completedCards.sort((a, b) => new Date(b.dateLastActivity) - new Date(a.dateLastActivity));
+
+    return { outdatedCards, recentCards, completedCards };
   }
 
   /**
    * Format card information for reporting
    */
-  async formatCardInfo(card) {
+  async formatCardInfo(card, listName) {
     const actions = await this.getCardActions(card.id);
 
     // Find who assigned members
@@ -203,17 +235,31 @@ class TrelloService {
       ? assignmentActions[0].memberCreator.fullName
       : 'Unknown';
 
+    const memberDetails = card.members.map(m => {
+      const memberIdentifier = m.fullName || m.username || '';
+      const role = roleHelpers.getMemberRole(memberIdentifier);
+      const status = roleHelpers.getCardStatusForMember(listName || card.listName, memberIdentifier);
+      return {
+        name: m.fullName || m.username,
+        role,
+        status
+      };
+    });
+
     return {
       name: card.name,
       url: card.shortUrl || card.url,
       members: card.members.map(m => m.fullName).join(', ') || 'Unassigned',
+      memberDetails,
       assignedBy,
       lastActivity: card.dateLastActivity,
       due: card.due,
       dueComplete: card.dueComplete,
       labels: card.labels.map(l => l.name).filter(n => n).join(', '),
       description: card.desc,
-      daysSinceActivity: card.daysSinceActivity || 0
+      daysSinceActivity: card.daysSinceActivity || 0,
+      listName: listName || card.listName,
+      roleStatus: card.roleStatus || {}
     };
   }
 
@@ -230,8 +276,8 @@ class TrelloService {
         // Get all active cards (not archived)
         const activeCards = boardData.cards.filter(card => !card.closed);
 
-        // Categorize cards by activity
-        const { outdatedCards, recentCards } = this.categorizeCardsByActivity(activeCards);
+        // Categorize cards by activity and role-based completion
+        const { outdatedCards, recentCards, completedCards } = this.categorizeCardsByActivity(activeCards, boardData.listMap);
 
         // Format outdated cards by status and collect member statistics
         const outdatedCardsByStatus = {};
@@ -242,31 +288,39 @@ class TrelloService {
           if (!outdatedCardsByStatus[listName]) {
             outdatedCardsByStatus[listName] = [];
           }
-          const formattedCard = await this.formatCardInfo(card);
+          const formattedCard = await this.formatCardInfo(card, listName);
           outdatedCardsByStatus[listName].push(formattedCard);
 
           // Collect member statistics for hall of shame
+          // Only count cards that are not "done" for the specific member
           if (card.members && card.members.length > 0) {
             card.members.forEach(member => {
               const memberName = member.fullName || member.username || 'Unknown';
-              if (!memberStatistics[memberName]) {
-                memberStatistics[memberName] = {
-                  count: 0,
-                  maxDays: 0,
-                  totalDays: 0,
-                  cards: []
-                };
+              const memberIdentifier = member.fullName || member.username || '';
+
+              // Only count if the card is not done for this specific member
+              if (!roleHelpers.isCardDoneForMember(listName, memberIdentifier)) {
+                if (!memberStatistics[memberName]) {
+                  memberStatistics[memberName] = {
+                    count: 0,
+                    maxDays: 0,
+                    totalDays: 0,
+                    cards: [],
+                    role: roleHelpers.getMemberRole(memberIdentifier)
+                  };
+                }
+                memberStatistics[memberName].count++;
+                memberStatistics[memberName].maxDays = Math.max(
+                  memberStatistics[memberName].maxDays,
+                  card.daysSinceActivity
+                );
+                memberStatistics[memberName].totalDays += card.daysSinceActivity;
+                memberStatistics[memberName].cards.push({
+                  name: card.name,
+                  days: card.daysSinceActivity,
+                  listName: listName
+                });
               }
-              memberStatistics[memberName].count++;
-              memberStatistics[memberName].maxDays = Math.max(
-                memberStatistics[memberName].maxDays,
-                card.daysSinceActivity
-              );
-              memberStatistics[memberName].totalDays += card.daysSinceActivity;
-              memberStatistics[memberName].cards.push({
-                name: card.name,
-                days: card.daysSinceActivity
-              });
             });
           }
         }
@@ -278,8 +332,19 @@ class TrelloService {
           if (!recentCardsByStatus[listName]) {
             recentCardsByStatus[listName] = [];
           }
-          const formattedCard = await this.formatCardInfo(card);
+          const formattedCard = await this.formatCardInfo(card, listName);
           recentCardsByStatus[listName].push(formattedCard);
+        }
+
+        // Format completed cards by status (cards that are done for all assigned members)
+        const completedCardsByStatus = {};
+        for (const card of completedCards) {
+          const listName = boardData.listMap[card.idList]?.name || 'Unknown';
+          if (!completedCardsByStatus[listName]) {
+            completedCardsByStatus[listName] = [];
+          }
+          const formattedCard = await this.formatCardInfo(card, listName);
+          completedCardsByStatus[listName].push(formattedCard);
         }
 
         reports.push({
@@ -288,8 +353,10 @@ class TrelloService {
           totalCards: activeCards.length,
           outdatedCards: outdatedCards.length,
           recentCards: recentCards.length,
+          completedCards: completedCards.length,
           outdatedCardsByStatus,
           recentCardsByStatus,
+          completedCardsByStatus,
           memberStatistics,
           lists: boardData.lists
         });

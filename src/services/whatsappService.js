@@ -1,4 +1,5 @@
 const axios = require('axios');
+const { roleHelpers } = require('../config/teamRoles');
 
 class WhatsAppService {
   constructor(apiUrl, apiToken, groupId) {
@@ -124,7 +125,17 @@ class WhatsAppService {
 
       message += `📌 *Board: ${report.boardName}*\n`;
       message += `🔗 ${report.boardUrl}\n`;
-      message += `📊 Total Card: ${report.totalCards} | Mangkrak: ${report.outdatedCards} | Update Terbaru: ${report.recentCards}\n\n`;
+      message += `📊 Total Card: ${report.totalCards} | Mangkrak: ${report.outdatedCards} | Update Terbaru: ${report.recentCards}\n`;
+
+      // Show team composition
+      if (report.memberStatistics && Object.keys(report.memberStatistics).length > 0) {
+        const devCount = Object.values(report.memberStatistics).filter(m => m.role === 'developers').length;
+        const qaCount = Object.values(report.memberStatistics).filter(m => m.role === 'testers').length;
+        if (devCount > 0 || qaCount > 0) {
+          message += `👥 Tim: ${devCount} Dev, ${qaCount} QA\n`;
+        }
+      }
+      message += `\n`;
 
       // SECTION 1: Show recent updates FIRST (positive reinforcement)
       if (report.recentCards > 0) {
@@ -144,6 +155,14 @@ class WhatsAppService {
 
               if (card.members && card.members !== 'Unassigned') {
                 message += `  👤 Si rajin: ${card.members} 🏆\n`;
+
+                // Show role-based status for each member
+                if (card.memberDetails && card.memberDetails.length > 0) {
+                  card.memberDetails.forEach(member => {
+                    const statusEmoji = member.status === 'done' ? '✅' : member.status === 'in_progress' ? '🔄' : '📋';
+                    message += `     → ${member.name} (${member.role}): ${statusEmoji} ${member.status}\n`;
+                  });
+                }
               } else {
                 message += `  ⚠️ Belum ada yang handle (tapi masih fresh kok!)\n`;
               }
@@ -193,13 +212,31 @@ class WhatsAppService {
                 message += `  🎯 *TERTUDUH: ${card.members.toUpperCase()}* 👈\n`;
                 message += `  ✏️ Yang nyuruh: ${card.assignedBy} (ikut tanggung jawab ya!)\n`;
 
-                // Add to hall of shame
-                if (!hallOfShame[card.members]) {
-                  hallOfShame[card.members] = { count: 0, maxDays: 0, cards: [] };
+                // Show role-based status for each member
+                if (card.memberDetails && card.memberDetails.length > 0) {
+                  card.memberDetails.forEach(member => {
+                    const role = member.role === 'developers' ? 'Dev' : member.role === 'testers' ? 'QA' : member.role;
+                    const isDone = member.status === 'done';
+
+                    if (isDone) {
+                      message += `     → ${member.name} (${role}): ✅ Udah selesai bagiannya!\n`;
+                    } else {
+                      message += `     → ${member.name} (${role}): ❌ Masih harus selesaikan ini!\n`;
+
+                      // Only add to hall of shame if not done for this member
+                      if (!hallOfShame[member.name]) {
+                        hallOfShame[member.name] = { count: 0, maxDays: 0, cards: [], role: member.role };
+                      }
+                      hallOfShame[member.name].count++;
+                      hallOfShame[member.name].maxDays = Math.max(hallOfShame[member.name].maxDays, card.daysSinceActivity);
+                      hallOfShame[member.name].cards.push({
+                        name: card.name,
+                        status: card.listName,
+                        days: card.daysSinceActivity
+                      });
+                    }
+                  });
                 }
-                hallOfShame[card.members].count++;
-                hallOfShame[card.members].maxDays = Math.max(hallOfShame[card.members].maxDays, card.daysSinceActivity);
-                hallOfShame[card.members].cards.push(card.name);
               } else {
                 message += `  👻 *GAK ADA YANG MAU HANDLE! HANTU KALI YA?*\n`;
               }
@@ -250,12 +287,35 @@ class WhatsAppService {
 
         if (index === 0) {
           message += `${medal} *JUARA 1: ${name.toUpperCase()}* ${medal}\n`;
+
+          // Show role
+          const roleLabel = data.role === 'developers' ? '💻 Developer' : data.role === 'testers' ? '🔍 QA Tester' : '👤 Unknown';
+          message += `${roleLabel}\n`;
+
           message += `🎉 *SELAMAT! KAMU BERHASIL MENELANTARKAN ${data.count} CARD!* 🎉\n`;
           message += `⏱️ *REKOR: ${data.maxDays} HARI TANPA SENTUHAN!*\n`;
-          message += `📝 Card yang dilupakan: ${data.cards.slice(0, 3).join(', ')}${data.cards.length > 3 ? ` dan ${data.cards.length - 3} lainnya...` : ''}\n`;
+
+          // Show specific cards with their status
+          if (data.cards && data.cards.length > 0) {
+            const cardsToShow = data.cards.slice(0, 3);
+            message += `📝 Card yang dilupakan:\n`;
+            cardsToShow.forEach(card => {
+              if (typeof card === 'object' && card.name) {
+                const emoji = data.role === 'developers' && card.status.toLowerCase().includes('test') ? '🎯' : '💀';
+                message += `   ${emoji} ${card.name} (di ${card.status})\n`;
+              } else {
+                message += `   💀 ${card}\n`;
+              }
+            });
+            if (data.cards.length > 3) {
+              message += `   ... dan ${data.cards.length - 3} lainnya\n`;
+            }
+          }
+
           message += `👏 _Standing ovation untuk dedikasi dalam mengabaikan tugas!_ 👏\n\n`;
         } else {
-          message += `${medal} ${name}: ${data.count} card mangkrak (max ${data.maxDays} hari)\n`;
+          const roleIcon = data.role === 'developers' ? '💻' : data.role === 'testers' ? '🔍' : '👤';
+          message += `${medal} ${name} ${roleIcon}: ${data.count} card mangkrak (max ${data.maxDays} hari)\n`;
         }
       });
 

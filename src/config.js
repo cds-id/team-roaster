@@ -69,7 +69,17 @@ const config = {
     // Max cards per message when splitting
     maxCardsPerMessage: parseInt(process.env.MAX_CARDS_PER_MESSAGE, 10) || 5,
     // Delay between messages in seconds
-    messageDelay: parseInt(process.env.MESSAGE_DELAY, 10) || 2
+    messageDelay: parseInt(process.env.MESSAGE_DELAY, 10) || 2,
+    // Enable role-based task tracking (developers vs testers)
+    enableRoleBasedTracking: process.env.ENABLE_ROLE_BASED_TRACKING === 'true',
+    // Custom done status for developers (when enabled)
+    developerDoneStatuses: process.env.DEVELOPER_DONE_STATUSES ?
+      process.env.DEVELOPER_DONE_STATUSES.split(',').map(s => s.trim()) :
+      ['Testing', 'Test', 'QA', 'Quality Assurance', 'Ready for Testing', 'In Testing'],
+    // Custom done status for testers (when enabled)
+    testerDoneStatuses: process.env.TESTER_DONE_STATUSES ?
+      process.env.TESTER_DONE_STATUSES.split(',').map(s => s.trim()) :
+      ['Done', 'Complete', 'Completed', 'Released', 'Deployed', 'Live', 'Closed']
   }
 };
 
